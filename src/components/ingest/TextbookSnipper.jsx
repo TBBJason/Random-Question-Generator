@@ -535,54 +535,35 @@ export default function TextbookSnipper() {
 
   // --- HYBRID AUTO-EXTRACT (Vision-LLM Primary + Local Heuristic Fallback) ---
     const handleAutoExtract = async (e) => {
-    e.preventDefault();
-    if (!selectedTextbook?.bookPdfBlob || structuredPreview.length === 0) return;
+        e.preventDefault();
+        if (!selectedTextbook?.bookPdfBlob || structuredPreview.length === 0) return;
 
-    setIsAutoExtracting(true);
-    setExtractStatusText('Initializing auto-cropper...');
+        setIsAutoExtracting(true);
+        setExtractStatusText('Finding and cropping questions...');
 
-    try {
+        try {
         const parsedHint = parseInt(startPageHint, 10);
         const qHint = !Number.isNaN(parsedHint) && parsedHint > 0 ? parsedHint : null;
 
-        const parsedSolHint = parseInt(solPageHint, 10);
-        const sHint = !Number.isNaN(parsedSolHint) && parsedSolHint > 0 ? parsedSolHint : null;
-
-        // 1. Extract Questions from Textbook PDF
+        // Extract Questions only (keeps extraction fast and accurate)
         const qResult = await autoExtractFromPdf({
-        pdfBlob: selectedTextbook.bookPdfBlob,
-        structuredProblems: structuredPreview,
-        mode: 'question',
-        isBackOfBook: false,
-        apiKey,
-        startPageHint: qHint,
-        onProgress: setExtractStatusText,
+            pdfBlob: selectedTextbook.bookPdfBlob,
+            structuredProblems: structuredPreview,
+            mode: 'question',
+            isBackOfBook: false,
+            apiKey,
+            startPageHint: qHint,
+            onProgress: setExtractStatusText,
         });
 
-        // 2. Extract Solutions from separate Solutions PDF OR back-of-book Solutions section
-        const hasSeparateSolutions = Boolean(selectedTextbook.solutionsPdfBlob);
-        const sResult = await autoExtractFromPdf({
-        pdfBlob: hasSeparateSolutions
-            ? selectedTextbook.solutionsPdfBlob
-            : selectedTextbook.bookPdfBlob,
-        structuredProblems: structuredPreview,
-        mode: 'solution',
-        isBackOfBook: !hasSeparateSolutions,
-        apiKey,
-        startPageHint: sHint,
-        onProgress: setExtractStatusText,
-        });
-
-        // 3. Store paired Question + Solution drafts in IndexedDB for verification
         const now = Date.now();
         const course = (queueCourseTag || selectedTextbook.courseTag || 'General').trim();
         const reviewItems = [];
 
         for (const prob of structuredPreview) {
-        const qMatch = qResult.matches.get(prob.problemNumber) || null;
-        const sMatch = sResult.matches.get(prob.problemNumber) || null;
+            const qMatch = qResult.matches.get(prob.problemNumber) || null;
 
-        const id = await db.questions.add({
+            const id = await db.questions.add({
             courseTag: course,
             textbookId: selectedTextbookId,
             referenceLabel: prob.label,
@@ -590,41 +571,42 @@ export default function TextbookSnipper() {
             questionText: '',
             questionImageBlob: qMatch?.blob || null,
             solutionText: '',
-            solutionImageBlob: sMatch?.blob || null,
+            solutionImageBlob: null,
             confidence: 'new',
             timesReviewed: 0,
             createdAt: now,
-        });
+            });
 
-        reviewItems.push({
+            reviewItems.push({
             id,
             courseTag: course,
             referenceLabel: prob.label,
             questionImageBlob: qMatch?.blob || null,
             questionPage: qMatch?.pageNumber || null,
             questionNormRect: qMatch?.normRect || null,
-            solutionImageBlob: sMatch?.blob || null,
-            solutionPage: sMatch?.pageNumber || null,
-            solutionNormRect: sMatch?.normRect || null,
+            solutionImageBlob: null,
+            solutionPage: null,
+            solutionNormRect: null,
             approved: false,
-        });
+            });
         }
 
         setRawProblemList('');
+        setActiveSlot('solution'); // Ready for manual solution snipping after review
         setReviewBatch({
-        items: reviewItems,
-        questionEngine: qResult.engineUsed,
-        solutionEngine: sResult.engineUsed,
-        fallbackReason: qResult.fallbackReason || sResult.fallbackReason,
+            items: reviewItems,
+            questionEngine: qResult.engineUsed,
+            solutionEngine: 'none',
+            fallbackReason: qResult.fallbackReason,
         });
         setIsReviewOpen(true);
-    } catch (err) {
+        } catch (err) {
         console.error('Auto-extract failed:', err);
         alert(`Auto-extract encountered an error: ${err.message}`);
-    } finally {
+        } finally {
         setIsAutoExtracting(false);
         setExtractStatusText('');
-    }
+        }
     };
 
   // Jump straight to the exact PDF page + pre-drawn box when user clicks "Adjust Crop" in Review Modal
