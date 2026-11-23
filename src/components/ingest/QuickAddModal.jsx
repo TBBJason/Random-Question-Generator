@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, ClipboardPaste, Upload, Check } from 'lucide-react';
-import { db } from '../../db/db';
+import { addQuestion } from '../../db/db';
 
 function ImagePreviewBox({ blob, onClear }) {
   const [url, setUrl] = useState(null);
@@ -39,6 +39,7 @@ export default function QuickAddModal({ isOpen, onClose, existingCourses = [] })
   const [questionBlob, setQuestionBlob] = useState(null);
   const [solutionText, setSolutionText] = useState('');
   const [solutionBlob, setSolutionBlob] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
   const [savedToast, setSavedToast] = useState(false);
 
   if (!isOpen) return null;
@@ -58,39 +59,45 @@ export default function QuickAddModal({ isOpen, onClose, existingCourses = [] })
 
   const handleSave = async (e, keepOpen = false) => {
     e.preventDefault();
-    if (!questionText.trim() && !questionBlob) return;
+    if ((!questionText.trim() && !questionBlob) || isSaving) return;
 
-    await db.questions.add({
-      courseTag: courseTag.trim() || 'General',
-      textbookId: null,
-      referenceLabel: referenceLabel.trim(),
-      status: 'ready',
-      questionText: questionText.trim(),
-      questionImageBlob: questionBlob,
-      solutionText: solutionText.trim(),
-      solutionImageBlob: solutionBlob,
-      confidence: 'new',
-      timesReviewed: 0,
-      createdAt: Date.now(),
-    });
+    setIsSaving(true);
+    try {
+      await addQuestion({
+        courseTag: courseTag.trim() || 'General',
+        referenceLabel: referenceLabel.trim(),
+        status: 'ready',
+        questionText: questionText.trim(),
+        questionImageBlob: questionBlob,
+        solutionText: solutionText.trim(),
+        solutionImageBlob: solutionBlob,
+        confidence: 'new',
+        timesReviewed: 0,
+      });
 
-    setReferenceLabel('');
-    setQuestionText('');
-    setQuestionBlob(null);
-    setSolutionText('');
-    setSolutionBlob(null);
+      setReferenceLabel('');
+      setQuestionText('');
+      setQuestionBlob(null);
+      setSolutionText('');
+      setSolutionBlob(null);
 
-    if (keepOpen) {
-      setSavedToast(true);
-      setTimeout(() => setSavedToast(false), 1800);
-    } else {
-      onClose();
+      if (keepOpen) {
+        setSavedToast(true);
+        setTimeout(() => setSavedToast(false), 1800);
+      } else {
+        onClose();
+      }
+    } catch (err) {
+      console.error('Failed to save question:', err);
+      alert(`Could not save question: ${err.message}`);
+    } finally {
+      setIsSaving(false);
     }
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
-      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 shadow-xl sm:p-6">
         <div className="mb-4 flex items-center justify-between border-b border-slate-100 pb-3">
           <div>
             <h2 className="text-lg font-bold text-slate-900">Quick Add Question</h2>
@@ -219,17 +226,17 @@ export default function QuickAddModal({ isOpen, onClose, existingCourses = [] })
               <button
                 type="button"
                 onClick={(e) => handleSave(e, true)}
-                disabled={!questionText.trim() && !questionBlob}
+                disabled={(!questionText.trim() && !questionBlob) || isSaving}
                 className="rounded-lg border border-indigo-200 bg-indigo-50 px-3.5 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 disabled:opacity-40"
               >
-                Save &amp; Add Another
+                {isSaving ? 'Saving...' : 'Save & Add Another'}
               </button>
               <button
                 type="submit"
-                disabled={!questionText.trim() && !questionBlob}
+                disabled={(!questionText.trim() && !questionBlob) || isSaving}
                 className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-40"
               >
-                Save Question
+                {isSaving ? 'Saving...' : 'Save Question'}
               </button>
             </div>
           </div>

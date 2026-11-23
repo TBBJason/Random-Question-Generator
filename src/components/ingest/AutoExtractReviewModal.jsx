@@ -3,13 +3,12 @@ import {
   CheckCircle2,
   Crop,
   Trash2,
-  X,
   Sparkles,
   Cpu,
   AlertTriangle,
   CheckCheck,
 } from 'lucide-react';
-import { db } from '../../db/db';
+import { updateQuestionMeta, deleteQuestion } from '../../db/db';
 
 function PreviewImg({ blob, label }) {
   const [url, setUrl] = useState(null);
@@ -42,8 +41,8 @@ function PreviewImg({ blob, label }) {
 export default function AutoExtractReviewModal({
   isOpen,
   onClose,
-  batchSummary, // { items: [...], questionEngine, solutionEngine, fallbackReason }
-  onFixCrop, // ({ questionId, slot, pageNumber, normRect }) => void
+  batchSummary,
+  onFixCrop,
 }) {
   const [items, setItems] = useState([]);
 
@@ -54,7 +53,7 @@ export default function AutoExtractReviewModal({
   if (!isOpen || !batchSummary) return null;
 
   const handleApproveOne = async (id) => {
-    await db.questions.update(id, { status: 'ready' });
+    await updateQuestionMeta(id, { status: 'ready' });
     setItems((prev) =>
       prev.map((item) => (item.id === id ? { ...item, approved: true } : item))
     );
@@ -66,13 +65,15 @@ export default function AutoExtractReviewModal({
       .map((it) => it.id);
 
     if (readyIds.length > 0) {
-      await db.questions.where('id').anyOf(readyIds).modify({ status: 'ready' });
+      await Promise.all(
+        readyIds.map((id) => updateQuestionMeta(id, { status: 'ready' }))
+      );
     }
     onClose();
   };
 
   const handleDiscard = async (id) => {
-    await db.questions.delete(id);
+    await deleteQuestion(id);
     setItems((prev) => prev.filter((item) => item.id !== id));
   };
 
@@ -101,7 +102,8 @@ export default function AutoExtractReviewModal({
               )}
             </div>
             <p className="mt-0.5 text-xs text-slate-500">
-              Double-check each screenshot pair below, fix any clipped boxes, or approve all to add them to your Study deck.
+              Double-check each screenshot pair below, fix any clipped boxes, or
+              approve all to add them to your Study deck.
             </p>
           </div>
 
@@ -126,12 +128,14 @@ export default function AutoExtractReviewModal({
           </div>
         </div>
 
-        {/* Fallback Notice Banner (shown only when Vision API fell back to local heuristic) */}
+        {/* Fallback Notice Banner */}
         {batchSummary.fallbackReason && (
           <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-6 py-2.5 text-xs text-amber-900">
             <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
             <span>
-              <strong>Offline / Fallback mode active:</strong> {batchSummary.fallbackReason}. Used local text-coordinate cropping—please verify edges below.
+              <strong>Offline / Fallback mode active:</strong>{' '}
+              {batchSummary.fallbackReason}. Used local text-coordinate
+              cropping—please verify edges below.
             </span>
           </div>
         )}
@@ -147,7 +151,9 @@ export default function AutoExtractReviewModal({
               <div
                 key={item.id}
                 className={`rounded-xl border bg-white p-4 shadow-2xs transition ${
-                  item.approved ? 'border-emerald-300 bg-emerald-50/20' : 'border-slate-200'
+                  item.approved
+                    ? 'border-emerald-300 bg-emerald-50/20'
+                    : 'border-slate-200'
                 }`}
               >
                 {/* Card Top Bar */}
@@ -194,7 +200,8 @@ export default function AutoExtractReviewModal({
                   <div>
                     <div className="mb-1.5 flex items-center justify-between">
                       <span className="text-xs font-bold uppercase tracking-wider text-indigo-700">
-                        Question {item.questionPage ? `(p. ${item.questionPage})` : ''}
+                        Question{' '}
+                        {item.questionPage ? `(p. ${item.questionPage})` : ''}
                       </span>
                       <button
                         type="button"
@@ -209,17 +216,23 @@ export default function AutoExtractReviewModal({
                         className="inline-flex items-center gap-1 rounded bg-indigo-50 px-2 py-0.5 text-[11px] font-semibold text-indigo-700 hover:bg-indigo-100"
                       >
                         <Crop className="h-3 w-3" />
-                        {item.questionImageBlob ? 'Adjust Q Crop' : 'Snip Manually'}
+                        {item.questionImageBlob
+                          ? 'Adjust Q Crop'
+                          : 'Snip Manually'}
                       </button>
                     </div>
-                    <PreviewImg blob={item.questionImageBlob} label="question" />
+                    <PreviewImg
+                      blob={item.questionImageBlob}
+                      label="question"
+                    />
                   </div>
 
                   {/* Solution Column */}
                   <div>
                     <div className="mb-1.5 flex items-center justify-between">
                       <span className="text-xs font-bold uppercase tracking-wider text-emerald-700">
-                        Solution {item.solutionPage ? `(p. ${item.solutionPage})` : ''}
+                        Solution{' '}
+                        {item.solutionPage ? `(p. ${item.solutionPage})` : ''}
                       </span>
                       <button
                         type="button"
@@ -234,10 +247,15 @@ export default function AutoExtractReviewModal({
                         className="inline-flex items-center gap-1 rounded bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100"
                       >
                         <Crop className="h-3 w-3" />
-                        {item.solutionImageBlob ? 'Adjust Sol Crop' : 'Snip Manually'}
+                        {item.solutionImageBlob
+                          ? 'Adjust Sol Crop'
+                          : 'Snip Manually'}
                       </button>
                     </div>
-                    <PreviewImg blob={item.solutionImageBlob} label="solution" />
+                    <PreviewImg
+                      blob={item.solutionImageBlob}
+                      label="solution"
+                    />
                   </div>
                 </div>
               </div>

@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { useLiveQuery } from 'dexie-react-hooks';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -8,35 +7,16 @@ import {
   Eye,
   RotateCcw,
   CheckCircle2,
-  Flame,
   HelpCircle,
   BookOpen,
   Sparkles,
+  Loader2,
 } from 'lucide-react';
-import { db } from '../../db/db';
-
-function BlobImage({ blob, alt }) {
-  const [url, setUrl] = useState(null);
-
-  useEffect(() => {
-    if (!blob) {
-      setUrl(null);
-      return;
-    }
-    const objectUrl = URL.createObjectURL(blob);
-    setUrl(objectUrl);
-    return () => URL.revokeObjectURL(objectUrl);
-  }, [blob]);
-
-  if (!url) return null;
-  return (
-    <img
-      src={url}
-      alt={alt}
-      className="mx-auto max-h-[28rem] w-auto rounded-lg border border-slate-200 bg-white object-contain shadow-xs"
-    />
-  );
-}
+import {
+  useQuestions,
+  updateQuestionMeta,
+  updateQuestionSlot,
+} from '../../db/db';
 
 function RichContent({ text }) {
   if (!text || !text.trim()) return null;
@@ -59,13 +39,13 @@ function fisherYatesShuffle(array) {
 }
 
 export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
-  const allQuestions = useLiveQuery(() => db.questions.toArray(), []);
+  const { questions: allQuestions, loading } = useQuestions();
 
   // Only cards that actually have a question image or text can be studied
   const studyableQuestions = useMemo(() => {
     if (!allQuestions) return [];
     return allQuestions.filter(
-      (q) => Boolean(q.questionImageBlob) || Boolean(q.questionText?.trim())
+      (q) => Boolean(q.questionImageUrl) || Boolean(q.questionText?.trim())
     );
   }, [allQuestions]);
 
@@ -76,7 +56,7 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
   }, [studyableQuestions]);
 
   // Filter state
-  const [selectedCourses, setSelectedCourses] = useState([]); // empty = All courses
+  const [selectedCourses, setSelectedCourses] = useState([]);
   const [requireSolution, setRequireSolution] = useState(false);
 
   // Active shuffle-deck state
@@ -85,6 +65,7 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
   const [completedCount, setCompletedCount] = useState(0);
   const [initialDeckSize, setInitialDeckSize] = useState(0);
   const [sessionStarted, setSessionStarted] = useState(false);
+  const [isUploadingSol, setIsUploadingSol] = useState(false);
 
   const matchingPool = useMemo(() => {
     return studyableQuestions.filter((q) => {
@@ -93,7 +74,7 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
         selectedCourses.includes(q.courseTag || 'General');
       const solutionMatch =
         !requireSolution ||
-        Boolean(q.solutionImageBlob) ||
+        Boolean(q.solutionImageUrl) ||
         Boolean(q.solutionText?.trim());
       return courseMatch && solutionMatch;
     });
@@ -108,7 +89,7 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
     setSessionStarted(true);
   }, [matchingPool]);
 
-  // Auto-initialize deck once questions load from IndexedDB
+  // Auto-initialize deck once questions load from Supabase
   useEffect(() => {
     if (!sessionStarted && matchingPool.length > 0) {
       startNewDeck();
@@ -121,7 +102,7 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
     );
   };
 
-  // Current active question record (looked up live so edits reflect immediately)
+  // Current active question record
   const currentCard = useMemo(() => {
     if (deckIds.length === 0) return null;
     return studyableQuestions.find((q) => q.id === deckIds[0]) || null;
@@ -132,18 +113,15 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
     async (rating) => {
       if (!currentCard) return;
 
-      await db.questions.update(currentCard.id, {
-        confidence: rating,
-        timesReviewed: (currentCard.timesReviewed || 0) + 1,
-      });
+      const cardId = currentCard.id;
+      const nextReviewed = (currentCard.timesReviewed || 0) + 1;
 
       setDeckIds((prev) => {
         const [, ...rest] = prev;
         if (rating === 'again') {
-          // Re-insert 3 to 5 positions later in the active deck
           const offset = Math.min(rest.length, 3 + Math.floor(Math.random() * 3));
           const updated = [...rest];
-          updated.splice(offset, 0, currentCard.id);
+          updated.splice(offset, 0, cardId);
           return updated;
         }
         return rest;
@@ -153,6 +131,15 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
         setCompletedCount((c) => c + 1);
       }
       setIsRevealed(false);
+
+      try {
+        await updateQuestionMeta(cardId, {
+          confidence: rating,
+          timesReviewed: nextReviewed,
+        });
+      } catch (err) {
+        console.error('Failed to sync rating:', err);
+      }
     },
     [currentCard]
   );
@@ -185,10 +172,49 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [currentCard, isRevealed, handleRate]);
 
-  // Empty state when no questions exist yet
-  if (allQuestions && studyableQuestions.length === 0) {
+  // Paste solution screenshot directly when solution is revealed
+  useEffect(() => {
+    if (!isRevealed || !currentCard) return;
+
+    const handlePasteSolution = async (e) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault();
+          const file = item.getAsFile();
+          if (file) {
+            setIsUploadingSol(true);
+            try {
+              await updateQuestionSlot(currentCard.id, 'solution', {
+                imageBlob: file,
+              });
+            } finally {
+              setIsUploadingSol(false);
+            }
+          }
+          break;
+        }
+      }
+    };
+
+    window.addEventListener('paste', handlePasteSolution);
+    return () => window.removeEventListener('paste', handlePasteSolution);
+  }, [isRevealed, currentCard]);
+
+  if (loading && studyableQuestions.length === 0) {
     return (
-      <div className="mx-auto mt-16 max-w-lg rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-xs">
+      <div className="flex items-center justify-center py-24 text-sm font-medium text-slate-600">
+        <Loader2 className="mr-2 h-4 w-4 animate-spin text-indigo-600" />
+        Loading your study deck...
+      </div>
+    );
+  }
+
+  // Empty state when no questions exist yet
+  if (!loading && studyableQuestions.length === 0) {
+    return (
+      <div className="mx-4 mt-12 max-w-lg rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-xs sm:mx-auto sm:mt-16">
         <BookOpen className="mx-auto mb-3 h-10 w-10 text-indigo-600" />
         <h2 className="text-lg font-bold text-slate-900">Your Question Deck is Empty</h2>
         <p className="mt-2 text-sm text-slate-600">
@@ -198,14 +224,14 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
           <button
             type="button"
             onClick={onOpenQuickAdd}
-            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
+            className="min-h-11 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
           >
             + Quick Add Question
           </button>
           <button
             type="button"
             onClick={onGoToSnipper}
-            className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            className="min-h-11 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
           >
             Open PDF Snipper
           </button>
@@ -215,15 +241,15 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
   }
 
   return (
-    <div className="mx-auto max-w-4xl px-4 py-6">
+    <div className="mx-auto max-w-4xl px-3 py-4 sm:px-4 sm:py-6">
       {/* Course Filter & Shuffle Bar */}
-      <div className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+      <div className="mb-5 rounded-xl border border-slate-200 bg-white p-3.5 shadow-xs sm:mb-6 sm:p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
               onClick={() => setSelectedCourses([])}
-              className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
+              className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
                 selectedCourses.length === 0
                   ? 'bg-indigo-600 text-white'
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -238,7 +264,7 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
                   key={course}
                   type="button"
                   onClick={() => toggleCourse(course)}
-                  className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
+                  className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
                     active
                       ? 'bg-indigo-600 text-white'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -250,7 +276,7 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
             })}
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex w-full items-center justify-between gap-3 sm:w-auto sm:justify-end">
             <label className="flex cursor-pointer items-center gap-1.5 text-xs font-medium text-slate-600">
               <input
                 type="checkbox"
@@ -265,7 +291,7 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
               type="button"
               onClick={startNewDeck}
               disabled={matchingPool.length === 0}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-40"
+              className="inline-flex min-h-10 items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-40"
             >
               <Shuffle className="h-3.5 w-3.5" />
               Shuffle Deck ({matchingPool.length})
@@ -300,7 +326,7 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
           No questions match the current filter. Try selecting more courses or unchecking &ldquo;Has solution only&rdquo;.
         </div>
       ) : !currentCard ? (
-        <div className="rounded-2xl border border-emerald-200 bg-white p-10 text-center shadow-xs">
+        <div className="rounded-2xl border border-emerald-200 bg-white p-8 text-center shadow-xs sm:p-10">
           <Sparkles className="mx-auto mb-3 h-10 w-10 text-emerald-600" />
           <h2 className="text-xl font-bold text-slate-900">Deck Complete!</h2>
           <p className="mt-1.5 text-sm text-slate-600">
@@ -309,7 +335,7 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
           <button
             type="button"
             onClick={startNewDeck}
-            className="mt-6 inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700"
+            className="mt-6 inline-flex min-h-12 items-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white hover:bg-indigo-700"
           >
             <RotateCcw className="h-4 w-4" />
             Reshuffle &amp; Study Again
@@ -318,8 +344,8 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
       ) : (
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           {/* Card Header */}
-          <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/70 px-6 py-3">
-            <div className="flex items-center gap-2">
+          <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/70 px-4 py-3 sm:px-6">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="rounded-md bg-indigo-100 px-2.5 py-0.5 text-xs font-bold text-indigo-700">
                 {currentCard.courseTag || 'General'}
               </span>
@@ -335,43 +361,84 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
           </div>
 
           {/* Question Body */}
-          <div className="p-6 sm:p-8">
+          <div className="p-5 sm:p-8">
             <div className="mb-3 text-xs font-bold uppercase tracking-wider text-slate-400">
               Problem
             </div>
             <div className="space-y-4">
               <RichContent text={currentCard.questionText} />
-              <BlobImage blob={currentCard.questionImageBlob} alt="Problem" />
+              {currentCard.questionImageUrl && (
+                <img
+                  src={currentCard.questionImageUrl}
+                  alt="Problem"
+                  loading="lazy"
+                  className="mx-auto max-h-[28rem] w-auto rounded-lg border border-slate-200 bg-white object-contain shadow-xs"
+                />
+              )}
             </div>
           </div>
 
           {/* Solution Section (Hidden until revealed) */}
           {!isRevealed ? (
-            <div className="border-t border-slate-100 bg-slate-50 px-6 py-5 text-center">
+            <div className="border-t border-slate-100 bg-slate-50 p-4 text-center sm:px-6 sm:py-5">
               <button
                 type="button"
                 onClick={() => setIsRevealed(true)}
-                className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-xs hover:bg-indigo-700"
+                className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-xs hover:bg-indigo-700 sm:w-auto"
               >
                 <Eye className="h-4 w-4" />
-                Reveal Solution (Space)
+                Reveal Solution <span className="hidden sm:inline">(Space)</span>
               </button>
             </div>
           ) : (
-            <div className="border-t border-emerald-100 bg-emerald-50/30 p-6 sm:p-8">
+            <div className="border-t border-emerald-100 bg-emerald-50/30 p-5 sm:p-8">
               <div className="mb-3 text-xs font-bold uppercase tracking-wider text-emerald-700">
                 Solution
               </div>
 
-              {currentCard.solutionText?.trim() || currentCard.solutionImageBlob ? (
+              {currentCard.solutionText?.trim() || currentCard.solutionImageUrl ? (
                 <div className="space-y-4">
                   <RichContent text={currentCard.solutionText} />
-                  <BlobImage blob={currentCard.solutionImageBlob} alt="Solution" />
+                  {currentCard.solutionImageUrl && (
+                    <img
+                      src={currentCard.solutionImageUrl}
+                      alt="Solution"
+                      loading="lazy"
+                      className="mx-auto max-h-[28rem] w-auto rounded-lg border border-slate-200 bg-white object-contain shadow-xs"
+                    />
+                  )}
                 </div>
               ) : (
-                <p className="rounded-lg border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
-                  No solution attached to this card yet. You can add one anytime in the Library tab.
-                </p>
+                <div className="rounded-lg border border-dashed border-emerald-300 bg-white p-5 text-center text-sm text-slate-600">
+                  <p className="font-medium text-slate-800">
+                    {isUploadingSol ? 'Uploading solution...' : 'No solution attached yet'}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Press <kbd className="rounded bg-slate-100 px-1.5 py-0.5 font-mono">Cmd + V</kbd> to paste a screenshot, or{' '}
+                    <label className="cursor-pointer font-semibold text-emerald-700 underline hover:text-emerald-800">
+                      upload an image
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            setIsUploadingSol(true);
+                            try {
+                              await updateQuestionSlot(currentCard.id, 'solution', {
+                                imageBlob: file,
+                              });
+                            } finally {
+                              setIsUploadingSol(false);
+                            }
+                          }
+                        }}
+                      />
+                    </label>
+                    .
+                  </p>
+                </div>
               )}
 
               {/* Confidence Rating Controls */}
@@ -379,43 +446,43 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
                 <p className="mb-3 text-center text-xs font-semibold uppercase tracking-wider text-slate-500">
                   How did that go?
                 </p>
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-3 gap-2.5 sm:gap-3">
                   <button
                     type="button"
                     onClick={() => handleRate('again')}
-                    className="flex flex-col items-center justify-center rounded-xl border border-rose-200 bg-rose-50 px-3 py-3 text-rose-700 transition hover:bg-rose-100"
+                    className="flex min-h-14 flex-col items-center justify-center rounded-xl border border-rose-200 bg-rose-50 px-2 py-3 text-rose-700 transition hover:bg-rose-100 sm:px-3"
                   >
                     <span className="flex items-center gap-1.5 text-sm font-bold">
                       <RotateCcw className="h-4 w-4" />
-                      Again (1)
+                      Again <span className="hidden sm:inline">(1)</span>
                     </span>
                     <span className="mt-0.5 text-[11px] text-rose-600">
-                      Re-queue in 3–5 cards
+                      Re-queue in 3–5
                     </span>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => handleRate('hard')}
-                    className="flex flex-col items-center justify-center rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-amber-800 transition hover:bg-amber-100"
+                    className="flex min-h-14 flex-col items-center justify-center rounded-xl border border-amber-200 bg-amber-50 px-2 py-3 text-amber-800 transition hover:bg-amber-100 sm:px-3"
                   >
                     <span className="flex items-center gap-1.5 text-sm font-bold">
                       <HelpCircle className="h-4 w-4" />
-                      Hard (2)
+                      Hard <span className="hidden sm:inline">(2)</span>
                     </span>
                     <span className="mt-0.5 text-[11px] text-amber-700">
-                      Got it with effort
+                      With effort
                     </span>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => handleRate('good')}
-                    className="flex flex-col items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-emerald-800 transition hover:bg-emerald-100"
+                    className="flex min-h-14 flex-col items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50 px-2 py-3 text-emerald-800 transition hover:bg-emerald-100 sm:px-3"
                   >
                     <span className="flex items-center gap-1.5 text-sm font-bold">
                       <CheckCircle2 className="h-4 w-4" />
-                      Good (3)
+                      Good <span className="hidden sm:inline">(3)</span>
                     </span>
                     <span className="mt-0.5 text-[11px] text-emerald-700">
                       Solved cleanly

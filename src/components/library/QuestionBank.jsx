@@ -1,9 +1,19 @@
 import React, { useState, useMemo } from 'react';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { Download, Upload, Trash2, Search, CheckCircle2, Clock } from 'lucide-react';
-import { db } from '../../db/db';
+import {
+  Download,
+  Upload,
+  Trash2,
+  Search,
+  CheckCircle2,
+  Clock,
+  Image as ImageIcon,
+} from 'lucide-react';
+import { useQuestions, addQuestion, deleteQuestion } from '../../db/db';
 
-function blobToDataURL(blob) {
+async function imageUrlToDataURL(url) {
+  if (!url) return null;
+  const res = await fetch(url);
+  const blob = await res.blob();
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onloadend = () => resolve(reader.result);
@@ -18,14 +28,12 @@ async function dataURLToBlob(dataUrl) {
 }
 
 export default function QuestionBank() {
-  const questions = useLiveQuery(
-    () => db.questions.orderBy('createdAt').reverse().toArray(),
-    []
-  );
+  const { questions, loading } = useQuestions();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [courseFilter, setCourseFilter] = useState('ALL');
   const [isExporting, setIsExporting] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
 
   const courses = useMemo(() => {
     if (!questions) return [];
@@ -57,12 +65,12 @@ export default function QuestionBank() {
           referenceLabel: q.referenceLabel,
           status: q.status,
           questionText: q.questionText,
-          questionImageDataUrl: q.questionImageBlob
-            ? await blobToDataURL(q.questionImageBlob)
+          questionImageDataUrl: q.questionImageUrl
+            ? await imageUrlToDataURL(q.questionImageUrl)
             : null,
           solutionText: q.solutionText,
-          solutionImageDataUrl: q.solutionImageBlob
-            ? await blobToDataURL(q.solutionImageBlob)
+          solutionImageDataUrl: q.solutionImageUrl
+            ? await imageUrlToDataURL(q.solutionImageUrl)
             : null,
           confidence: q.confidence,
           timesReviewed: q.timesReviewed,
@@ -89,42 +97,50 @@ export default function QuestionBank() {
 
   const handleImportBackup = async (file) => {
     if (!file) return;
+    setIsImporting(true);
     try {
       const text = await file.text();
       const parsed = JSON.parse(text);
       const items = Array.isArray(parsed.questions) ? parsed.questions : [];
 
-      const records = await Promise.all(
-        items.map(async (item) => ({
+      for (const item of items) {
+        const questionImageBlob = item.questionImageDataUrl
+          ? await dataURLToBlob(item.questionImageDataUrl)
+          : null;
+        const solutionImageBlob = item.solutionImageDataUrl
+          ? await dataURLToBlob(item.solutionImageDataUrl)
+          : null;
+
+        await addQuestion({
           courseTag: item.courseTag || 'General',
-          textbookId: null,
           referenceLabel: item.referenceLabel || '',
           status: item.status || 'ready',
           questionText: item.questionText || '',
-          questionImageBlob: item.questionImageDataUrl
-            ? await dataURLToBlob(item.questionImageDataUrl)
-            : null,
+          questionImageBlob,
           solutionText: item.solutionText || '',
-          solutionImageBlob: item.solutionImageDataUrl
-            ? await dataURLToBlob(item.solutionImageDataUrl)
-            : null,
+          solutionImageBlob,
           confidence: item.confidence || 'new',
           timesReviewed: item.timesReviewed || 0,
-          createdAt: item.createdAt || Date.now(),
-        }))
-      );
-
-      if (records.length > 0) {
-        await db.questions.bulkAdd(records);
+        });
       }
     } catch (err) {
       alert('Could not import backup file. Make sure it is a valid ShuffleStudy JSON export.');
       console.error(err);
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    try {
+      await deleteQuestion(id);
+    } catch (err) {
+      alert(`Could not delete question: ${err.message}`);
     }
   };
 
   return (
-    <div className="mx-auto max-w-5xl px-4 py-6">
+    <div className="mx-auto max-w-5xl px-3 py-4 sm:px-4 sm:py-6">
       {/* Top Controls */}
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
         <div className="flex flex-wrap items-center gap-2">
@@ -166,10 +182,11 @@ export default function QuestionBank() {
 
           <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800">
             <Upload className="h-3.5 w-3.5" />
-            Import Backup
+            {isImporting ? 'Importing...' : 'Import Backup'}
             <input
               type="file"
               accept="application/json"
+              disabled={isImporting}
               className="hidden"
               onChange={(e) => handleImportBackup(e.target.files?.[0])}
             />
@@ -179,14 +196,18 @@ export default function QuestionBank() {
 
       {/* Question List */}
       <div className="space-y-2.5">
-        {filtered.length === 0 ? (
+        {loading && filtered.length === 0 ? (
+          <div className="rounded-xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">
+            Loading library...
+          </div>
+        ) : filtered.length === 0 ? (
           <div className="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">
             No saved questions found.
           </div>
         ) : (
           filtered.map((q) => {
-            const hasQuestion = Boolean(q.questionImageBlob || q.questionText?.trim());
-            const hasSolution = Boolean(q.solutionImageBlob || q.solutionText?.trim());
+            const hasQuestion = Boolean(q.questionImageUrl || q.questionText?.trim());
+            const hasSolution = Boolean(q.solutionImageUrl || q.solutionText?.trim());
 
             return (
               <div
@@ -212,6 +233,11 @@ export default function QuestionBank() {
                         <Clock className="h-3 w-3" /> Draft
                       </span>
                     )}
+                    {q.questionImageUrl && (
+                      <span className="inline-flex items-center gap-1 rounded bg-indigo-50/70 px-2 py-0.5 text-[11px] font-medium text-indigo-600">
+                        <ImageIcon className="h-3 w-3" /> Q Image
+                      </span>
+                    )}
                     {hasSolution && (
                       <span className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
                         + Solution
@@ -228,7 +254,7 @@ export default function QuestionBank() {
 
                 <button
                   type="button"
-                  onClick={() => db.questions.delete(q.id)}
+                  onClick={() => handleDelete(q.id)}
                   title="Delete question"
                   className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
                 >
