@@ -1,122 +1,104 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import React, { useState, useMemo } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { Shuffle, Scissors, Library, Plus } from 'lucide-react';
+import { db } from './db/db';
+import StudySession from './components/study/StudySession';
+import TextbookSnipper from './components/ingest/TextbookSnipper';
+import QuickAddModal from './components/ingest/QuickAddModal';
+import QuestionBank from './components/library/QuestionBank';
 
-function App() {
-  const [count, setCount] = useState(0)
+export default function App() {
+  const [activeTab, setActiveTab] = useState('study'); // 'study' | 'snipper' | 'library'
+  const [isQuickAddOpen, setIsQuickAddOpen] = useState(false);
+
+  const questions = useLiveQuery(() => db.questions.toArray(), []);
+
+  const readyCount = useMemo(() => {
+    if (!questions) return 0;
+    return questions.filter(
+      (q) => Boolean(q.questionImageBlob) || Boolean(q.questionText?.trim())
+    ).length;
+  }, [questions]);
+
+  const existingCourses = useMemo(() => {
+    if (!questions) return [];
+    return Array.from(new Set(questions.map((q) => q.courseTag).filter(Boolean))).sort();
+  }, [questions]);
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
+    <div className="min-h-screen bg-slate-50 text-slate-900">
+      <nav className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 sm:px-6">
+        <div className="flex items-center gap-4">
+          <span className="rounded-lg bg-indigo-600 px-2.5 py-1 text-sm font-bold text-white">
+            ShuffleStudy
+          </span>
+
+          <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1">
+            <button
+              type="button"
+              onClick={() => setActiveTab('study')}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                activeTab === 'study'
+                  ? 'bg-white text-indigo-700 shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Shuffle className="h-3.5 w-3.5" />
+              Study ({readyCount})
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('library')}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                activeTab === 'library'
+                  ? 'bg-white text-indigo-700 shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Library className="h-3.5 w-3.5" />
+              Library ({questions?.length || 0})
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('snipper')}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                activeTab === 'snipper'
+                  ? 'bg-white text-indigo-700 shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Scissors className="h-3.5 w-3.5" />
+              PDF Snipper
+            </button>
+          </div>
         </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
+
         <button
           type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
+          onClick={() => setIsQuickAddOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white shadow-2xs hover:bg-indigo-700"
         >
-          Count is {count}
+          <Plus className="h-4 w-4" />
+          Quick Add
         </button>
-      </section>
+      </nav>
 
-      <div className="ticks"></div>
+      {activeTab === 'study' && (
+        <StudySession
+          onOpenQuickAdd={() => setIsQuickAddOpen(true)}
+          onGoToSnipper={() => setActiveTab('snipper')}
+        />
+      )}
+      {activeTab === 'library' && <QuestionBank />}
+      {activeTab === 'snipper' && <TextbookSnipper />}
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+      <QuickAddModal
+        isOpen={isQuickAddOpen}
+        onClose={() => setIsQuickAddOpen(false)}
+        existingCourses={existingCourses}
+      />
+    </div>
+  );
 }
-
-export default App
