@@ -187,10 +187,6 @@ export async function addQuestion({
   confidence = 'new',
   timesReviewed = 0,
 }) {
-  const { data: authData } = await supabase.auth.getUser();
-  const userId = authData?.user?.id;
-  if (!userId) throw new Error('You must be signed in to add questions.');
-
   const [qImg, sImg] = await Promise.all([
     uploadImageToStorage(questionImageBlob),
     uploadImageToStorage(solutionImageBlob),
@@ -201,7 +197,6 @@ export async function addQuestion({
   const { data, error } = await supabase
     .from('questions')
     .insert({
-      user_id: userId,
       course_tag: courseTag.trim() || 'General',
       reference_label: referenceLabel || '',
       status: hasQuestion ? 'ready' : status,
@@ -231,12 +226,7 @@ export async function addQuestion({
 export async function queueDraftQuestions({ courseTag, labels }) {
   if (!labels || labels.length === 0) return [];
 
-  const { data: authData } = await supabase.auth.getUser();
-  const userId = authData?.user?.id;
-  if (!userId) throw new Error('You must be signed in to queue questions.');
-
   const rows = labels.map((label) => ({
-    user_id: userId,
     course_tag: (courseTag || 'General').trim() || 'General',
     reference_label: label,
     status: 'draft',
@@ -359,6 +349,100 @@ export async function updateQuestionMeta(id, fields) {
     .single();
 
   if (error) throw error;
+
+  const mapped = mapRowFromDb(data);
+  cachedQuestions = cachedQuestions.map((q) => (q.id === id ? mapped : q));
+  notifyListeners();
+  return mapped;
+}
+
+/**
+ * Updates an existing question's metadata, text, and/or images in Supabase
+ */
+export async function updateQuestion(
+  id,
+  {
+    courseTag,
+    referenceLabel,
+    questionText,
+    questionImageBlob,
+    clearQuestionImage = false,
+    solutionText,
+    solutionImageBlob,
+    clearSolutionImage = false,
+  }
+) {
+  const existing = cachedQuestions.find((q) => q.id === id);
+  const dbUpdates = {};
+  const oldPathsToDelete = [];
+
+  if (courseTag !== undefined) {
+    dbUpdates.course_tag = courseTag.trim() || 'General';
+  }
+  if (referenceLabel !== undefined) {
+    dbUpdates.reference_label = referenceLabel.trim();
+  }
+  if (questionText !== undefined) {
+    dbUpdates.question_text = questionText;
+  }
+  if (solutionText !== undefined) {
+    dbUpdates.solution_text = solutionText;
+  }
+
+  if (clearQuestionImage) {
+    if (existing?.questionImagePath) {
+      oldPathsToDelete.push(existing.questionImagePath);
+    }
+    dbUpdates.question_image_path = null;
+    dbUpdates.question_image_url = null;
+  } else if (questionImageBlob) {
+    if (existing?.questionImagePath) {
+      oldPathsToDelete.push(existing.questionImagePath);
+    }
+    const qImg = await uploadImageToStorage(questionImageBlob);
+    dbUpdates.question_image_path = qImg.path;
+    dbUpdates.question_image_url = qImg.url;
+  }
+
+  if (clearSolutionImage) {
+    if (existing?.solutionImagePath) {
+      oldPathsToDelete.push(existing.solutionImagePath);
+    }
+    dbUpdates.solution_image_path = null;
+    dbUpdates.solution_image_url = null;
+  } else if (solutionImageBlob) {
+    if (existing?.solutionImagePath) {
+      oldPathsToDelete.push(existing.solutionImagePath);
+    }
+    const sImg = await uploadImageToStorage(solutionImageBlob);
+    dbUpdates.solution_image_path = sImg.path;
+    dbUpdates.solution_image_url = sImg.url;
+  }
+
+  const finalQuestionText =
+    dbUpdates.question_text !== undefined
+      ? dbUpdates.question_text
+      : existing?.questionText || '';
+  const finalQuestionImageUrl =
+    dbUpdates.question_image_url !== undefined
+      ? dbUpdates.question_image_url
+      : existing?.questionImageUrl || null;
+
+  dbUpdates.status =
+    finalQuestionImageUrl || finalQuestionText.trim() ? 'ready' : 'draft';
+
+  const { data, error } = await supabase
+    .from('questions')
+    .update(dbUpdates)
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) throw error;
+
+  if (oldPathsToDelete.length > 0) {
+    await removeStoragePaths(oldPathsToDelete);
+  }
 
   const mapped = mapRowFromDb(data);
   cachedQuestions = cachedQuestions.map((q) => (q.id === id ? mapped : q));

@@ -11,12 +11,14 @@ import {
   BookOpen,
   Sparkles,
   Loader2,
+  Pencil,
 } from 'lucide-react';
 import {
   useQuestions,
   updateQuestionMeta,
   updateQuestionSlot,
 } from '../../db/db';
+import EditQuestionModal from '../library/EditQuestionModal';
 
 function RichContent({ text }) {
   if (!text || !text.trim()) return null;
@@ -66,6 +68,7 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
   const [initialDeckSize, setInitialDeckSize] = useState(0);
   const [sessionStarted, setSessionStarted] = useState(false);
   const [isUploadingSol, setIsUploadingSol] = useState(false);
+  const [isEditingCard, setIsEditingCard] = useState(false);
 
   const matchingPool = useMemo(() => {
     return studyableQuestions.filter((q) => {
@@ -149,7 +152,7 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
     const onKeyDown = (e) => {
       const tag = document.activeElement?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      if (!currentCard) return;
+      if (!currentCard || isEditingCard) return;
 
       if (e.code === 'Space' && !isRevealed) {
         e.preventDefault();
@@ -170,11 +173,11 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [currentCard, isRevealed, handleRate]);
+  }, [currentCard, isRevealed, isEditingCard, handleRate]);
 
   // Paste solution screenshot directly when solution is revealed
   useEffect(() => {
-    if (!isRevealed || !currentCard) return;
+    if (!isRevealed || !currentCard || isEditingCard) return;
 
     const handlePasteSolution = async (e) => {
       const items = e.clipboardData?.items;
@@ -200,7 +203,7 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
 
     window.addEventListener('paste', handlePasteSolution);
     return () => window.removeEventListener('paste', handlePasteSolution);
-  }, [isRevealed, currentCard]);
+  }, [isRevealed, currentCard, isEditingCard]);
 
   if (loading && studyableQuestions.length === 0) {
     return (
@@ -355,9 +358,19 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
                 </span>
               )}
             </div>
-            <span className="text-xs text-slate-400">
-              Reviewed {currentCard.timesReviewed || 0}x
-            </span>
+            <div className="flex items-center gap-2.5">
+              <span className="text-xs text-slate-400">
+                Reviewed {currentCard.timesReviewed || 0}x
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsEditingCard(true)}
+                className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600 hover:border-indigo-300 hover:text-indigo-600"
+              >
+                <Pencil className="h-3 w-3" />
+                Edit
+              </button>
+            </div>
           </div>
 
           {/* Question Body */}
@@ -392,8 +405,20 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
             </div>
           ) : (
             <div className="border-t border-emerald-100 bg-emerald-50/30 p-5 sm:p-8">
-              <div className="mb-3 text-xs font-bold uppercase tracking-wider text-emerald-700">
-                Solution
+              <div className="mb-3 flex items-center justify-between">
+                <span className="text-xs font-bold uppercase tracking-wider text-emerald-700">
+                  Solution
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsEditingCard(true)}
+                  className="inline-flex items-center gap-1 rounded-md bg-white px-2.5 py-1 text-xs font-semibold text-emerald-700 shadow-2xs ring-1 ring-emerald-200 hover:bg-emerald-50"
+                >
+                  <Pencil className="h-3 w-3" />
+                  {currentCard.solutionText?.trim() || currentCard.solutionImageUrl
+                    ? 'Edit Solution'
+                    : 'Add Solution'}
+                </button>
               </div>
 
               {currentCard.solutionText?.trim() || currentCard.solutionImageUrl ? (
@@ -494,6 +519,13 @@ export default function StudySession({ onOpenQuickAdd, onGoToSnipper }) {
           )}
         </div>
       )}
+
+      <EditQuestionModal
+        question={currentCard}
+        isOpen={isEditingCard}
+        onClose={() => setIsEditingCard(false)}
+        existingCourses={courses}
+      />
     </div>
   );
 }

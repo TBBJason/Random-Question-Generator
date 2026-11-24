@@ -7,8 +7,10 @@ import {
   CheckCircle2,
   Clock,
   Image as ImageIcon,
+  Pencil,
 } from 'lucide-react';
 import { useQuestions, addQuestion, deleteQuestion } from '../../db/db';
+import EditQuestionModal from './EditQuestionModal';
 
 async function imageUrlToDataURL(url) {
   if (!url) return null;
@@ -34,6 +36,7 @@ export default function QuestionBank() {
   const [courseFilter, setCourseFilter] = useState('ALL');
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [editingQuestion, setEditingQuestion] = useState(null);
 
   const courses = useMemo(() => {
     if (!questions) return [];
@@ -252,19 +255,36 @@ export default function QuestionBank() {
                   )}
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => handleDelete(q.id)}
-                  title="Delete question"
-                  className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setEditingQuestion(q)}
+                    title="Edit question or solution"
+                    className="rounded-lg p-2 text-slate-400 hover:bg-indigo-50 hover:text-indigo-600"
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(q.id)}
+                    title="Delete question"
+                    className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
             );
           })
         )}
       </div>
+
+      <EditQuestionModal
+        question={editingQuestion}
+        isOpen={Boolean(editingQuestion)}
+        onClose={() => setEditingQuestion(null)}
+        existingCourses={courses}
+      />
     </div>
   );
 }

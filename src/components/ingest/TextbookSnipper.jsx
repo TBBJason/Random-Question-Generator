@@ -18,6 +18,7 @@ import {
   Wand2,
   Key,
   Loader2,
+  Pencil,
 } from 'lucide-react';
 import {
   db,
@@ -26,6 +27,7 @@ import {
   queueDraftQuestions,
   updateQuestionSlot,
   deleteQuestion,
+  updateQuestion,
 } from '../../db/db';
 import { parseStructuredProblems } from '../../utils/parseProblemList';
 import { pdfjsLib } from '../../utils/pdfConfig';
@@ -33,7 +35,7 @@ import { autoExtractFromPdf } from '../../utils/autoCropper';
 import AutoExtractReviewModal from './AutoExtractReviewModal';
 
 export default function TextbookSnipper() {
-  // --- Local IndexedDB Query for Laptop Textbook PDFs ---
+  // --- Local IndexedDB Textbooks ---
   const textbooks = useLiveQuery(
     () => db.textbooks.orderBy('createdAt').reverse().toArray(),
     []
@@ -56,17 +58,15 @@ export default function TextbookSnipper() {
 
   const questions = useMemo(() => {
     if (!allQuestions) return [];
-    if (selectedTextbook?.courseTag) {
-      return allQuestions.filter(
-        (q) =>
-          (q.courseTag || '').toLowerCase() ===
-          selectedTextbook.courseTag.toLowerCase()
-      );
-    }
-    return allQuestions;
+    if (!selectedTextbook?.courseTag) return allQuestions;
+    return allQuestions.filter(
+      (q) =>
+        (q.courseTag || 'General').toLowerCase() ===
+        selectedTextbook.courseTag.toLowerCase()
+    );
   }, [allQuestions, selectedTextbook?.courseTag]);
 
-  // --- Textbook Upload Form State ---
+  // --- Textbook Upload & Edit Form State ---
   const [showUploadForm, setShowUploadForm] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newCourseTag, setNewCourseTag] = useState('');
@@ -74,16 +74,19 @@ export default function TextbookSnipper() {
   const [solutionsFile, setSolutionsFile] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
 
+  const [isEditingTextbook, setIsEditingTextbook] = useState(false);
+  const [editBookTitle, setEditBookTitle] = useState('');
+  const [editBookCourse, setEditBookCourse] = useState('');
+  const [moveGeneralQuestions, setMoveGeneralQuestions] = useState(false);
+
   // --- Smart Queue & Auto-Extract State ---
   const [rawProblemList, setRawProblemList] = useState('');
   const [queueCourseTag, setQueueCourseTag] = useState('');
   const [startPageHint, setStartPageHint] = useState('');
   const [queueFilter, setQueueFilter] = useState('all');
 
-  // Vision API Key persisted in localStorage
-  const [apiKey, setApiKey] = useState(
-    () => localStorage.getItem('gemini_api_key') || ''
-  );
+  // Gemini API Key persisted in localStorage
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_api_key') || '');
   const [showApiKeyBox, setShowApiKeyBox] = useState(false);
 
   // Auto-extract progress & verification modal state
@@ -127,8 +130,7 @@ export default function TextbookSnipper() {
     }
     const stillExists = questions.some((q) => q.id === activeQuestionId);
     if (!stillExists) {
-      const firstDraft =
-        questions.find((q) => q.status === 'draft') || questions[0];
+      const firstDraft = questions.find((q) => q.status === 'draft') || questions[0];
       setActiveQuestionId(firstDraft.id);
     }
   }, [questions, activeQuestionId]);
@@ -148,9 +150,9 @@ export default function TextbookSnipper() {
   const [pdfLoading, setPdfLoading] = useState(false);
 
   const pendingNormRectRef = useRef(null);
+
   const currentPage = pageNumbers[pdfSource] || 1;
 
-  // Restore saved page number from localStorage when switching books
   useEffect(() => {
     if (!selectedTextbookId) return;
     const savedBookPage = Number(
@@ -176,7 +178,7 @@ export default function TextbookSnipper() {
 
   useEffect(() => {
     let cancelled = false;
-    let loadingTask = null;
+    let loadedDoc = null;
 
     async function loadPdf() {
       if (!activePdfBlob) {
@@ -188,24 +190,19 @@ export default function TextbookSnipper() {
       setPdfLoading(true);
       try {
         const arrayBuffer = await activePdfBlob.arrayBuffer();
-        loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-        const loadedDoc = await loadingTask.promise;
+        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+        loadedDoc = await loadingTask.promise;
 
         if (!cancelled) {
           setPdfDoc(loadedDoc);
           setNumPages(loadedDoc.numPages);
           setPageNumbers((prev) => ({
             ...prev,
-            [pdfSource]: Math.min(
-              Math.max(1, prev[pdfSource]),
-              loadedDoc.numPages
-            ),
+            [pdfSource]: Math.min(Math.max(1, prev[pdfSource]), loadedDoc.numPages),
           }));
         }
       } catch (err) {
-        if (!cancelled) {
-          console.error('Failed to load PDF:', err);
-        }
+        console.error('Failed to load PDF:', err);
       } finally {
         if (!cancelled) setPdfLoading(false);
       }
@@ -215,8 +212,8 @@ export default function TextbookSnipper() {
 
     return () => {
       cancelled = true;
-      if (loadingTask) {
-        loadingTask.destroy();
+      if (loadedDoc) {
+        loadedDoc.destroy();
       }
     };
   }, [selectedTextbookId, activePdfBlob, pdfSource]);
@@ -320,8 +317,7 @@ export default function TextbookSnipper() {
     const ctx = overlay.getContext('2d');
     ctx.clearRect(0, 0, overlay.width, overlay.height);
 
-    if (!selectionRect || selectionRect.width < 4 || selectionRect.height < 4)
-      return;
+    if (!selectionRect || selectionRect.width < 4 || selectionRect.height < 4) return;
 
     ctx.fillStyle = 'rgba(15, 23, 42, 0.25)';
     ctx.fillRect(0, 0, overlay.width, overlay.height);
@@ -373,15 +369,12 @@ export default function TextbookSnipper() {
   const handleMouseUp = () => {
     if (!isDragging) return;
     setIsDragging(false);
-    if (
-      selectionRect &&
-      (selectionRect.width < 10 || selectionRect.height < 10)
-    ) {
+    if (selectionRect && (selectionRect.width < 10 || selectionRect.height < 10)) {
       setSelectionRect(null);
     }
   };
 
-  // --- Save Cropped Snip to Supabase Storage & Auto-Advance Queue ---
+  // --- Save Cropped Snip & Auto-Advance Queue ---
   const handleSaveSnip = useCallback(async () => {
     if (
       !selectionRect ||
@@ -415,36 +408,15 @@ export default function TextbookSnipper() {
       cropCtx.drawImage(pdfCanvas, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
 
       const blob = await new Promise((resolve) =>
-        cropCanvas.toBlob(resolve, 'image/webp', 0.85)
+        cropCanvas.toBlob(resolve, 'image/png')
       );
 
       if (blob) {
-        await updateQuestionSlot(activeQuestion.id, activeSlot, {
-          imageBlob: blob,
-        });
+        await updateQuestionSlot(activeQuestion.id, activeSlot, { imageBlob: blob });
         setSelectionRect(null);
 
-        setReviewBatch((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            items: prev.items.map((item) =>
-              item.id === activeQuestion.id
-                ? {
-                    ...item,
-                    ...(activeSlot === 'question'
-                      ? { questionImageBlob: blob }
-                      : { solutionImageBlob: blob }),
-                  }
-                : item
-            ),
-          };
-        });
-
         if (questions && questions.length > 1) {
-          const currentIndex = questions.findIndex(
-            (q) => q.id === activeQuestion.id
-          );
+          const currentIndex = questions.findIndex((q) => q.id === activeQuestion.id);
           const orderedAfter = [
             ...questions.slice(currentIndex + 1),
             ...questions.slice(0, currentIndex),
@@ -463,9 +435,6 @@ export default function TextbookSnipper() {
           }
         }
       }
-    } catch (err) {
-      console.error('Failed to save snip:', err);
-      alert(`Could not save snip: ${err.message}`);
     } finally {
       setIsSavingSnip(false);
     }
@@ -479,10 +448,7 @@ export default function TextbookSnipper() {
       setPageNumbers((prev) => ({ ...prev, [pdfSource]: clamped }));
 
       if (pdfSource === 'book' && selectedTextbookId) {
-        localStorage.setItem(
-          `shufflestudy_page_${selectedTextbookId}`,
-          String(clamped)
-        );
+        localStorage.setItem(`shufflestudy_page_${selectedTextbookId}`, String(clamped));
       }
     },
     [numPages, pdfSource, selectedTextbookId]
@@ -513,15 +479,14 @@ export default function TextbookSnipper() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [selectionRect, handleSaveSnip, goToPage, currentPage]);
 
-  // --- Handlers: Upload Textbook Locally ---
+  // --- Handlers: Upload & Edit Textbook ---
   const handleUploadTextbook = async (e) => {
     e.preventDefault();
     if (!bookFile) return;
 
     setIsUploading(true);
     try {
-      const cleanTitle =
-        newTitle.trim() || bookFile.name.replace(/\.pdf$/i, '');
+      const cleanTitle = newTitle.trim() || bookFile.name.replace(/\.pdf$/i, '');
       const id = await db.textbooks.add({
         title: cleanTitle,
         courseTag: newCourseTag.trim() || 'General',
@@ -547,88 +512,136 @@ export default function TextbookSnipper() {
     setPdfSource('solutions');
   };
 
-  // --- Manual Queue Generation in Supabase ---
+  const openEditTextbook = () => {
+    if (!selectedTextbook) return;
+    setEditBookTitle(selectedTextbook.title || '');
+    setEditBookCourse(selectedTextbook.courseTag || '');
+    setMoveGeneralQuestions(false);
+    setIsEditingTextbook(true);
+  };
+
+  const handleSaveTextbookEdit = async (e) => {
+    e.preventDefault();
+    if (!selectedTextbookId || !selectedTextbook) return;
+
+    const updatedCourse = editBookCourse.trim() || 'General';
+    const updatedTitle =
+      editBookTitle.trim() || selectedTextbook.title || 'Untitled Textbook';
+
+    await db.textbooks.update(selectedTextbookId, {
+      title: updatedTitle,
+      courseTag: updatedCourse,
+    });
+
+    if (
+      moveGeneralQuestions &&
+      selectedTextbook.courseTag === 'General' &&
+      updatedCourse !== 'General' &&
+      allQuestions
+    ) {
+      const generalItems = allQuestions.filter(
+        (q) => (q.courseTag || 'General') === 'General'
+      );
+      await Promise.all(
+        generalItems.map((q) =>
+          updateQuestion(q.id, { courseTag: updatedCourse })
+        )
+      );
+    }
+
+    setQueueCourseTag(updatedCourse);
+    setIsEditingTextbook(false);
+  };
+
+  // --- Manual Queue Generation ---
   const handleManualQueueOnly = async () => {
     if (structuredPreview.length === 0) return;
 
-    try {
-      await queueDraftQuestions({
-        courseTag: queueCourseTag || selectedTextbook?.courseTag || 'General',
-        labels: structuredPreview.map((p) => p.label),
-      });
-      setRawProblemList('');
-    } catch (err) {
-      console.error('Failed to queue questions:', err);
-      alert(`Could not queue problems: ${err.message}`);
+    const created = await queueDraftQuestions({
+      courseTag: queueCourseTag || selectedTextbook?.courseTag || 'General',
+      labels: structuredPreview.map((p) => p.label),
+    });
+
+    setRawProblemList('');
+    if (created.length > 0) {
+      setActiveQuestionId(created[0].id);
     }
   };
 
-  // --- Auto-Extract Questions & Upload to Supabase ---
+  // --- HYBRID AUTO-EXTRACT ---
   const handleAutoExtract = async (e) => {
     e.preventDefault();
     if (!selectedTextbook?.bookPdfBlob || structuredPreview.length === 0) return;
 
     setIsAutoExtracting(true);
-    setExtractStatusText('Finding and cropping questions...');
+    setExtractStatusText('Initializing auto-cropper...');
 
     try {
       const parsedHint = parseInt(startPageHint, 10);
-      const qHint =
-        !Number.isNaN(parsedHint) && parsedHint > 0 ? parsedHint : null;
+      const hint = !Number.isNaN(parsedHint) && parsedHint > 0 ? parsedHint : null;
 
       const qResult = await autoExtractFromPdf({
         pdfBlob: selectedTextbook.bookPdfBlob,
         structuredProblems: structuredPreview,
         mode: 'question',
-        isBackOfBook: false,
         apiKey,
-        startPageHint: qHint,
+        startPageHint: hint,
         onProgress: setExtractStatusText,
       });
 
-      const course = (
-        queueCourseTag ||
-        selectedTextbook.courseTag ||
-        'General'
-      ).trim();
+      let sResult = { matches: new Map(), engineUsed: 'none', fallbackReason: null };
+      if (selectedTextbook.solutionsPdfBlob) {
+        sResult = await autoExtractFromPdf({
+          pdfBlob: selectedTextbook.solutionsPdfBlob,
+          structuredProblems: structuredPreview,
+          mode: 'solution',
+          apiKey,
+          startPageHint: null,
+          onProgress: setExtractStatusText,
+        });
+      }
+
+      const course = (queueCourseTag || selectedTextbook.courseTag || 'General').trim();
       const reviewItems = [];
 
       for (const prob of structuredPreview) {
         const qMatch = qResult.matches.get(prob.problemNumber) || null;
+        const sMatch = sResult.matches.get(prob.problemNumber) || null;
 
-        const created = await addQuestion({
+        const saved = await addQuestion({
           courseTag: course,
           referenceLabel: prob.label,
           status: 'draft',
           questionText: '',
           questionImageBlob: qMatch?.blob || null,
           solutionText: '',
-          solutionImageBlob: null,
+          solutionImageBlob: sMatch?.blob || null,
           confidence: 'new',
           timesReviewed: 0,
         });
 
         reviewItems.push({
-          id: created.id,
+          id: saved.id,
           courseTag: course,
           referenceLabel: prob.label,
+          questionImageUrl: saved.questionImageUrl,
           questionImageBlob: qMatch?.blob || null,
           questionPage: qMatch?.pageNumber || null,
           questionNormRect: qMatch?.normRect || null,
-          solutionImageBlob: null,
-          solutionPage: null,
-          solutionNormRect: null,
+          solutionImageUrl: saved.solutionImageUrl,
+          solutionImageBlob: sMatch?.blob || null,
+          solutionPage: sMatch?.pageNumber || null,
+          solutionNormRect: sMatch?.normRect || null,
           approved: false,
         });
       }
 
       setRawProblemList('');
-      setActiveSlot('solution');
       setReviewBatch({
         items: reviewItems,
         questionEngine: qResult.engineUsed,
-        solutionEngine: 'none',
-        fallbackReason: qResult.fallbackReason,
+        solutionEngine: sResult.engineUsed,
+        fallbackReason: qResult.fallbackReason || sResult.fallbackReason,
       });
       setIsReviewOpen(true);
     } catch (err) {
@@ -644,34 +657,14 @@ export default function TextbookSnipper() {
     setIsReviewOpen(false);
     setActiveQuestionId(questionId);
     setActiveSlot(slot);
+    pendingNormRectRef.current = normRect || null;
 
     const targetSource =
-      slot === 'solution' && selectedTextbook?.solutionsPdfBlob
-        ? 'solutions'
-        : 'book';
-    const targetPage = Math.max(1, pageNumber || 1);
-
-    if (
-      pdfSource === targetSource &&
-      currentPage === targetPage &&
-      overlayCanvasRef.current &&
-      normRect
-    ) {
-      const { width, height } = overlayCanvasRef.current;
-      setSelectionRect({
-        x: normRect.x * width,
-        y: normRect.y * height,
-        width: normRect.width * width,
-        height: normRect.height * height,
-      });
-      return;
-    }
-
-    pendingNormRectRef.current = normRect || null;
+      slot === 'solution' && selectedTextbook?.solutionsPdfBlob ? 'solutions' : 'book';
     setPdfSource(targetSource);
     setPageNumbers((prev) => ({
       ...prev,
-      [targetSource]: targetPage,
+      [targetSource]: Math.max(1, pageNumber || 1),
     }));
   };
 
@@ -686,11 +679,7 @@ export default function TextbookSnipper() {
 
   const handleDeleteQuestion = async (id, e) => {
     e.stopPropagation();
-    try {
-      await deleteQuestion(id);
-    } catch (err) {
-      console.error('Failed to delete question:', err);
-    }
+    await deleteQuestion(id);
   };
 
   return (
@@ -707,7 +696,7 @@ export default function TextbookSnipper() {
               <button
                 type="button"
                 onClick={() => setShowApiKeyBox((prev) => !prev)}
-                title="Configure Vision API Key"
+                title="Configure Gemini Vision API Key"
                 className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium ${
                   apiKey
                     ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
@@ -720,33 +709,33 @@ export default function TextbookSnipper() {
 
               <button
                 type="button"
-                onClick={() => setShowUploadForm((prev) => !prev)}
+                onClick={() => {
+                  setIsEditingTextbook(false);
+                  setShowUploadForm((prev) => !prev);
+                }}
                 className="inline-flex items-center gap-1 rounded-md bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100"
               >
-                {showUploadForm ? (
-                  <X className="h-3.5 w-3.5" />
-                ) : (
-                  <Plus className="h-3.5 w-3.5" />
-                )}
+                {showUploadForm ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
                 {showUploadForm ? 'Cancel' : 'Add PDF'}
               </button>
             </div>
           </div>
 
+          {/* Optional Gemini API Key Drawer */}
           {showApiKeyBox && (
             <div className="mb-2.5 rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs">
               <label className="mb-1 block font-semibold text-slate-700">
-                Vision API Key (Optional)
+                Gemini API Key (Primary Vision-LLM)
               </label>
               <input
                 type="password"
-                placeholder="sk-or-... or AIzaSy..."
+                placeholder="AIzaSy..."
                 value={apiKey}
                 onChange={(e) => handleSaveApiKey(e.target.value)}
                 className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs focus:border-indigo-500 focus:outline-none"
               />
               <p className="mt-1 text-[11px] text-slate-500">
-                Stored locally in your browser. If empty or offline, auto-crop uses the local text-coordinate fallback.
+                Stored locally in your browser. If empty or offline, auto-crop automatically uses the local text-coordinate fallback.
               </p>
             </div>
           )}
@@ -776,9 +765,7 @@ export default function TextbookSnipper() {
                 <input
                   type="file"
                   accept="application/pdf"
-                  onChange={(e) =>
-                    setSolutionsFile(e.target.files?.[0] || null)
-                  }
+                  onChange={(e) => setSolutionsFile(e.target.files?.[0] || null)}
                   className="w-full text-slate-600 file:mr-2 file:rounded file:border-0 file:bg-slate-600 file:px-2.5 file:py-1 file:text-xs file:font-medium file:text-white hover:file:bg-slate-700"
                 />
               </div>
@@ -809,28 +796,99 @@ export default function TextbookSnipper() {
                 {isUploading ? 'Saving...' : 'Save Textbook Locally'}
               </button>
             </form>
-          ) : (
-            <select
-              value={selectedTextbookId || ''}
-              onChange={(e) =>
-                setSelectedTextbookId(Number(e.target.value) || null)
-              }
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 focus:border-indigo-500 focus:outline-none"
+          ) : isEditingTextbook && selectedTextbook ? (
+            <form
+              onSubmit={handleSaveTextbookEdit}
+              className="mt-2 space-y-2 rounded-lg border border-indigo-200 bg-indigo-50/40 p-2.5 text-xs"
             >
-              {!textbooks || textbooks.length === 0 ? (
-                <option value="">No textbooks uploaded yet</option>
-              ) : (
-                textbooks.map((book) => (
-                  <option key={book.id} value={book.id}>
-                    [{book.courseTag}] {book.title}
-                  </option>
-                ))
+              <div>
+                <label className="mb-1 block font-semibold text-slate-700">
+                  Book Title
+                </label>
+                <input
+                  type="text"
+                  value={editBookTitle}
+                  onChange={(e) => setEditBookTitle(e.target.value)}
+                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block font-semibold text-slate-700">
+                  Course Tag
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. MATH 237"
+                  value={editBookCourse}
+                  onChange={(e) => setEditBookCourse(e.target.value)}
+                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              {selectedTextbook.courseTag === 'General' && (
+                <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-600">
+                  <input
+                    type="checkbox"
+                    checked={moveGeneralQuestions}
+                    onChange={(e) => setMoveGeneralQuestions(e.target.checked)}
+                    className="rounded border-slate-300 text-indigo-600"
+                  />
+                  Also move existing &ldquo;General&rdquo; questions to this course
+                </label>
               )}
-            </select>
+
+              <div className="flex justify-end gap-1.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setIsEditingTextbook(false)}
+                  className="rounded border border-slate-300 bg-white px-2.5 py-1 font-medium text-slate-600 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="rounded bg-indigo-600 px-3 py-1 font-semibold text-white hover:bg-indigo-700"
+                >
+                  Save
+                </button>
+              </div>
+            </form>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <select
+                value={selectedTextbookId || ''}
+                onChange={(e) =>
+                  setSelectedTextbookId(Number(e.target.value) || null)
+                }
+                className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 focus:border-indigo-500 focus:outline-none"
+              >
+                {!textbooks || textbooks.length === 0 ? (
+                  <option value="">No textbooks uploaded yet</option>
+                ) : (
+                  textbooks.map((book) => (
+                    <option key={book.id} value={book.id}>
+                      [{book.courseTag}] {book.title}
+                    </option>
+                  ))
+                )}
+              </select>
+
+              {selectedTextbook && (
+                <button
+                  type="button"
+                  onClick={openEditTextbook}
+                  title="Edit textbook title or course tag"
+                  className="shrink-0 rounded-lg border border-slate-300 bg-white p-2 text-slate-600 hover:bg-slate-50 hover:text-indigo-600"
+                >
+                  <Pencil className="h-4 w-4" />
+                </button>
+              )}
+            </div>
           )}
         </div>
 
-        {/* 2. Syllabus Problem List + Auto-Cropper */}
+        {/* 2. Syllabus Problem List + Hybrid Auto-Cropper */}
         <form onSubmit={handleAutoExtract} className="border-b border-slate-200 p-4">
           <div className="mb-1.5 flex items-center justify-between">
             <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
@@ -838,8 +896,7 @@ export default function TextbookSnipper() {
             </label>
             {structuredPreview.length > 0 && (
               <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] font-medium text-indigo-700">
-                {structuredPreview.length}{' '}
-                {structuredPreview.length === 1 ? 'problem' : 'problems'}
+                {structuredPreview.length} {structuredPreview.length === 1 ? 'problem' : 'problems'}
               </span>
             )}
           </div>
@@ -1002,7 +1059,7 @@ export default function TextbookSnipper() {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <span className="truncate text-sm font-semibold text-slate-900">
-                          {q.referenceLabel || 'Untitled Problem'}
+                          {q.referenceLabel || `Question #${q.id}`}
                         </span>
                         <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">
                           {q.courseTag}
@@ -1114,9 +1171,7 @@ export default function TextbookSnipper() {
                       type="file"
                       accept="application/pdf"
                       className="hidden"
-                      onChange={(e) =>
-                        handleAttachSolutionsLater(e.target.files?.[0])
-                      }
+                      onChange={(e) => handleAttachSolutionsLater(e.target.files?.[0])}
                     />
                   </label>
                 )
@@ -1168,9 +1223,7 @@ export default function TextbookSnipper() {
             <div className="flex items-center gap-1">
               <button
                 type="button"
-                onClick={() =>
-                  setZoom((z) => Math.max(0.6, +(z - 0.15).toFixed(2)))
-                }
+                onClick={() => setZoom((z) => Math.max(0.6, +(z - 0.15).toFixed(2)))}
                 className="rounded-md border border-slate-300 p-1.5 text-slate-700 hover:bg-slate-100"
               >
                 <ZoomOut className="h-4 w-4" />
@@ -1180,9 +1233,7 @@ export default function TextbookSnipper() {
               </span>
               <button
                 type="button"
-                onClick={() =>
-                  setZoom((z) => Math.min(2.5, +(z + 0.15).toFixed(2)))
-                }
+                onClick={() => setZoom((z) => Math.min(2.5, +(z + 0.15).toFixed(2)))}
                 className="rounded-md border border-slate-300 p-1.5 text-slate-700 hover:bg-slate-100"
               >
                 <ZoomIn className="h-4 w-4" />
@@ -1206,8 +1257,8 @@ export default function TextbookSnipper() {
               {activeQuestion ? (
                 <span>
                   Drag a box over the page to capture{' '}
-                  <strong className="uppercase underline">{activeSlot}</strong>{' '}
-                  for <strong>{activeQuestion.referenceLabel}</strong>
+                  <strong className="uppercase underline">{activeSlot}</strong> for{' '}
+                  <strong>{activeQuestion.referenceLabel}</strong>
                 </span>
               ) : (
                 <span>
@@ -1247,9 +1298,7 @@ export default function TextbookSnipper() {
                 Upload a Textbook PDF to Begin
               </h2>
               <p className="mt-1.5 text-xs leading-relaxed text-slate-600">
-                Click <strong>+ Add PDF</strong> in the top-left panel to store
-                your course textbook locally on your laptop while your cropped
-                questions sync to the cloud.
+                Click <strong>+ Add PDF</strong> in the top-left panel to store your course textbook (and optional solutions manual) locally in your browser.
               </p>
             </div>
           ) : pdfLoading ? (
